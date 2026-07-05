@@ -81,6 +81,22 @@
   .del-btn { background: none; border: none; color: var(--dimmer); cursor: pointer; font-size: 15px; padding: 2px 4px; line-height: 1; -webkit-tap-highlight-color: transparent; }
   .del-btn:active { color: var(--red); }
 
+  /* Edit day modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; padding: 24px; }
+  .modal-overlay.show { display: flex; }
+  .modal { background: var(--card); border-radius: 16px; padding: 24px 20px; width: 100%; max-width: 320px; box-shadow: 0 8px 40px rgba(0,0,0,0.6); }
+  .modal h3 { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 18px; }
+  .modal-field { margin-bottom: 14px; }
+  .modal-field label { display: block; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+  .modal-field input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 9px 12px; font-size: 14px; font-family: inherit; outline: none; }
+  .modal-field input:focus { border-color: var(--mint); }
+  .modal-btns { display: flex; gap: 10px; margin-top: 20px; }
+  .modal-btns button { flex: 1; padding: 11px 0; border-radius: 10px; border: none; font-family: inherit; font-weight: 700; font-size: 13px; cursor: pointer; }
+  .modal-save { background: var(--mint); color: var(--bg); }
+  .modal-cancel { background: var(--card2); color: var(--muted); }
+  .edit-day-btn { background: none; border: none; color: var(--dimmer); cursor: pointer; font-size: 13px; padding: 2px 5px; margin-left: 4px; vertical-align: middle; -webkit-tap-highlight-color: transparent; }
+  .edit-day-btn:active { color: var(--mint); }
+
   /* Install banner */
   #install-banner { display: none; background: var(--card2); border: 1px solid rgba(62,207,178,0.25); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; }
   #install-banner.show { display: flex; align-items: center; gap: 12px; }
@@ -165,6 +181,25 @@
   </div>
   <div id="log-container">
     <div class="empty">No sessions recorded yet.<br>Press Start to begin Day 1!</div>
+  </div>
+</div>
+
+<!-- Edit Day Modal -->
+<div class="modal-overlay" id="edit-day-modal">
+  <div class="modal">
+    <h3>Edit Day</h3>
+    <div class="modal-field">
+      <label>Day Number</label>
+      <input type="number" id="edit-day-num" min="1" max="999" placeholder="e.g. 3">
+    </div>
+    <div class="modal-field">
+      <label>Date</label>
+      <input type="date" id="edit-day-date">
+    </div>
+    <div class="modal-btns">
+      <button class="modal-cancel" onclick="closeEditDay()">Cancel</button>
+      <button class="modal-save" onclick="saveEditDay()">Save</button>
+    </div>
   </div>
 </div>
 
@@ -304,6 +339,57 @@ function recordSegment(startMs, endMs, seconds) {
     set: state.alignerSet
   });
 }
+
+// ─── Edit day ─────────────────────────────────────────────────────────────────
+let editingDayNum = null; // the dayNum currently being edited
+
+function openEditDay(dayNum) {
+  editingDayNum = dayNum;
+  const entries = state.log.filter(e => e.dayNum === dayNum);
+  document.getElementById('edit-day-num').value = dayNum;
+  document.getElementById('edit-day-date').value = entries[0]?.date || '';
+  document.getElementById('edit-day-modal').classList.add('show');
+}
+
+function closeEditDay() {
+  document.getElementById('edit-day-modal').classList.remove('show');
+  editingDayNum = null;
+}
+
+function saveEditDay() {
+  const newDayNum = parseInt(document.getElementById('edit-day-num').value, 10);
+  const newDate = document.getElementById('edit-day-date').value;
+  if (!newDayNum || newDayNum < 1) return;
+
+  // Check for collision with another day (not the one being edited)
+  const collision = state.log.some(e => e.dayNum === newDayNum && e.dayNum !== editingDayNum);
+  if (collision) {
+    alert(`Day ${newDayNum} already exists. Please choose a different number.`);
+    return;
+  }
+
+  state.log = state.log.map(e => {
+    if (e.dayNum === editingDayNum) {
+      return { ...e, dayNum: newDayNum, date: newDate || e.date };
+    }
+    return e;
+  });
+
+  // If we renamed the currently active day, update currentDay too
+  if (state.currentDay === editingDayNum) {
+    state.currentDay = newDayNum;
+    if (newDate) state.currentDayDate = newDate;
+  }
+
+  closeEditDay();
+  save();
+  updateUI();
+}
+
+// Close modal on overlay click
+document.getElementById('edit-day-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeEditDay();
+});
 
 // ─── Set management ───────────────────────────────────────────────────────────
 function startEditSet() {
@@ -467,6 +553,7 @@ function renderLog() {
     html += `<tr class="day-header"><td colspan="5">
       <span class="${pillClass}">Day ${dayNum}${dot}</span>
       📅 ${fmtDate(entries[0].date)}
+      <button class="edit-day-btn" onclick="openEditDay(${dayNum})" title="Edit day">✏️</button>
     </td></tr>`;
 
     entries.forEach((entry, localIdx) => {
@@ -531,6 +618,28 @@ if ('serviceWorker' in navigator) {
   const swUrl = URL.createObjectURL(blob);
   navigator.serviceWorker.register(swUrl, { scope: '/' }).catch(() => {});
 }
+
+// ─── Visibility / background resume ──────────────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // Resync elapsed from wall clock in case the tab was frozen
+    if (state.isRunning && !state.isPaused && state.sessionStartMs) {
+      const gone = Math.floor((Date.now() - state.sessionStartMs) / 1000);
+      state.elapsed = gone;
+    }
+    // Restart tick if it was killed by the OS
+    if (state.isRunning && !state.isPaused) {
+      stopTick();
+      startTick();
+    }
+    updateUI();
+  } else {
+    // App going to background — snapshot sessionStartMs so recovery is accurate
+    if (state.isRunning && !state.isPaused) {
+      save();
+    }
+  }
+});
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 load();
