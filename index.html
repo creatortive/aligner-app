@@ -619,6 +619,28 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register(swUrl, { scope: '/' }).catch(() => {});
 }
 
+// ─── Visibility / background resume ──────────────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    // Resync elapsed from wall clock in case the tab was frozen
+    if (state.isRunning && !state.isPaused && state.sessionStartMs) {
+      const gone = Math.floor((Date.now() - state.sessionStartMs) / 1000);
+      state.elapsed = gone;
+    }
+    // Restart tick if it was killed by the OS
+    if (state.isRunning && !state.isPaused) {
+      stopTick();
+      startTick();
+    }
+    updateUI();
+  } else {
+    // App going to background — snapshot sessionStartMs so recovery is accurate
+    if (state.isRunning && !state.isPaused) {
+      save();
+    }
+  }
+});
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 load();
 if (state.isRunning && !state.isPaused) startTick();
