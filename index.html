@@ -311,6 +311,7 @@ function handleStart() {
   state.currentDayDate = nowDateStr();
   state.sessionStartMs = now;
   state.daySessionStartMs = now;
+  state.segmentStartMs = now;  // first segment start
   state.lastEndMs = null;
   state.isRunning = true;
   state.isPaused = false;
@@ -320,7 +321,10 @@ function handleStart() {
 }
 
 function handleResume() {
-  state.sessionStartMs = Date.now();
+  const now = Date.now();
+  state.sessionStartMs = now;
+  state.segmentStartMs = now;  // new segment — new "Started" time for display
+  state.lastEndMs = null;
   state.isPaused = false;
   save();
   startTick();
@@ -523,19 +527,17 @@ function updateUI() {
   statusEl.textContent = isRunning && !isPaused ? '● Wearing' : isPaused ? '⏸ Paused' : currentDay > 0 ? 'Ready' : 'Ready';
   statusEl.style.color = isRunning && !isPaused ? '#3ECFB2' : isPaused ? '#F5A623' : 'var(--dim)';
 
-  // Session start/end times display
+  // Session start/end times display — shows current *segment* start & end
   const timesEl = document.getElementById('session-times');
   const endItem = document.getElementById('end-time-item');
-  if (isRunning || (currentDay > 0 && state.daySessionStartMs)) {
+  if (currentDay > 0 && state.segmentStartMs) {
     timesEl.style.display = 'flex';
-    document.getElementById('display-start-time').textContent =
-      state.daySessionStartMs ? fmtTime(state.daySessionStartMs) : '—';
-    if (state.lastEndMs && !isRunning) {
+    // Start: always the current segment's start
+    document.getElementById('display-start-time').textContent = fmtTime(state.segmentStartMs);
+    // End: show when paused or stopped
+    if (state.lastEndMs) {
       endItem.style.display = '';
       document.getElementById('display-end-time').textContent = fmtTime(state.lastEndMs);
-    } else if (isPaused && state.lastEndMs) {
-      endItem.style.display = '';
-      document.getElementById('display-end-time').textContent = fmtTime(state.lastEndMs) + ' (paused)';
     } else {
       endItem.style.display = 'none';
     }
@@ -558,7 +560,7 @@ function updateUI() {
   const btnStop  = document.getElementById('btn-stop');
 
   if (isPaused) {
-    btnStart.textContent = 'Resume'; btnStart.disabled = false;
+    btnStart.textContent = 'Start'; btnStart.disabled = false;
     btnStart.onclick = handleResume;
   } else {
     btnStart.textContent = 'Start'; btnStart.disabled = isRunning;
@@ -568,7 +570,7 @@ function updateUI() {
   btnStop.disabled  = !isRunning;
 
   // Start hint
-  document.getElementById('hint-start').textContent = isPaused ? 'continue day' : 'new day';
+  document.getElementById('hint-start').textContent = isPaused ? 'new segment' : 'new day';
 
   // Set display
   updateSetDisplay();
