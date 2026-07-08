@@ -57,6 +57,10 @@
   .btn-stop  { background: var(--red);  color: var(--bg); }
   .hint-row { display: flex; gap: 10px; justify-content: center; margin-top: 8px; }
   .hint { flex: 1; max-width: 110px; text-align: center; font-size: 10px; color: var(--dimmer); letter-spacing: 0.3px; }
+  .session-times { display: flex; justify-content: center; gap: 20px; margin-top: 14px; min-height: 36px; }
+  .session-time-item { text-align: center; }
+  .session-time-label { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--dimmer); margin-bottom: 2px; }
+  .session-time-value { font-family: 'DM Mono', monospace; font-size: 14px; color: var(--muted); }
   .next-day-hint { text-align: center; font-size: 12px; color: var(--dim); margin-top: 10px; }
   .next-day-hint span { color: var(--mint); font-weight: 600; }
 
@@ -150,6 +154,17 @@
     </div>
   </div>
 
+  <div class="session-times" id="session-times" style="display:none">
+    <div class="session-time-item">
+      <div class="session-time-label">Started</div>
+      <div class="session-time-value" id="display-start-time">—</div>
+    </div>
+    <div class="session-time-item" id="end-time-item" style="display:none">
+      <div class="session-time-label">Ended</div>
+      <div class="session-time-value" id="display-end-time">—</div>
+    </div>
+  </div>
+
   <div class="next-day-hint" id="next-day-hint" style="display:none">
     Press <span>Start</span> to begin Day <span id="next-day-num">2</span>
   </div>
@@ -215,30 +230,42 @@ let state = {
   currentDayDate: null,
   isRunning: false,
   isPaused: false,
-  sessionStartMs: null,   // ms timestamp when current segment started
-  elapsed: 0,             // seconds accumulated in the *live* segment
-  log: []                 // [{dayNum, date, startTime, endTime, seconds, set}]
+  sessionStartMs: null,    // ms when current *segment* started (resets each resume)
+  daySessionStartMs: null, // ms when Start was pressed for this day (never changes mid-day)
+  lastEndMs: null,         // ms of last pause or stop action
+  log: []                  // [{dayNum, date, startTime, endTime, seconds, set}]
 };
+
+// elapsed() is always computed live — never stored — so resume can never roll back
+function getElapsed() {
+  if (!state.isRunning || state.isPaused || !state.sessionStartMs) return 0;
+  return Math.floor((Date.now() - state.sessionStartMs) / 1000);
+}
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 function save() {
-  try { localStorage.setItem('aligner_v2', JSON.stringify(state)); } catch(e) {}
+  try { localStorage.setItem('aligner_v3', JSON.stringify(state)); } catch(e) {}
 }
 
 function load() {
   try {
-    const raw = localStorage.getItem('aligner_v2');
+    const raw = localStorage.getItem('aligner_v3');
     if (raw) {
       const saved = JSON.parse(raw);
       state = { ...state, ...saved };
-      // If app was closed while running, compute elapsed from saved sessionStartMs
-      if (state.isRunning && !state.isPaused && state.sessionStartMs) {
-        const gone = Math.floor((Date.now() - state.sessionStartMs) / 1000);
-        state.elapsed = (state.elapsed || 0) + gone;
-        // Update sessionStartMs to now so tick works correctly
-        state.sessionStartMs = Date.now();
-      }
-      // If closed while paused, elapsed is already saved (it's the paused-at value which we reset to 0 on pause)
+    }
+    // migrate old v2 data if present
+    const old = localStorage.getItem('aligner_v2');
+    if (old && !raw) {
+      try {
+        const o = JSON.parse(old);
+        if (o.log) state.log = o.log;
+        if (o.currentDay) state.currentDay = o.currentDay;
+        if (o.alignerSet) state.alignerSet = o.alignerSet;
+        // don't restore running state from v2 (elapsed was unreliable)
+        state.isRunning = false; state.isPaused = false;
+        state.sessionStartMs = null; state.daySessionStartMs = null;
+      } catch(e) {}
     }
   } catch(e) {}
 }
@@ -249,8 +276,6 @@ let tickInterval = null;
 function startTick() {
   if (tickInterval) return;
   tickInterval = setInterval(() => {
-    state.elapsed++;
-    // Save sessionStartMs periodically so recovery is accurate
     save();
     updateUI();
   }, 1000);
@@ -285,7 +310,8 @@ function handleStart() {
   state.currentDay++;
   state.currentDayDate = nowDateStr();
   state.sessionStartMs = now;
-  state.elapsed = 0;
+  state.daySessionStartMs = now;
+  state.lastEndMs = null;
   state.isRunning = true;
   state.isPaused = false;
   save();
@@ -305,9 +331,10 @@ function handlePause() {
   if (!state.isRunning || state.isPaused) return;
   stopTick();
   const now = Date.now();
-  recordSegment(state.sessionStartMs, now, state.elapsed);
+  const secs = getElapsed();
+  recordSegment(state.sessionStartMs, now, secs);
+  state.lastEndMs = now;
   state.isPaused = true;
-  state.elapsed = 0;
   state.sessionStartMs = null;
   save();
   updateUI();
@@ -318,11 +345,12 @@ function handleStop() {
   stopTick();
   const now = Date.now();
   if (!state.isPaused) {
-    recordSegment(state.sessionStartMs, now, state.elapsed);
+    const secs = getElapsed();
+    recordSegment(state.sessionStartMs, now, secs);
   }
+  state.lastEndMs = now;
   state.isRunning = false;
   state.isPaused = false;
-  state.elapsed = 0;
   state.sessionStartMs = null;
   save();
   updateUI();
@@ -471,7 +499,8 @@ function deleteEntry(idx) {
 
 // ─── UI update ────────────────────────────────────────────────────────────────
 function updateUI() {
-  const { isRunning, isPaused, elapsed, currentDay } = state;
+  const { isRunning, isPaused, currentDay } = state;
+  const elapsed = getElapsed(); // always computed live from sessionStartMs
 
   // Ring arc
   const arc = document.getElementById('ring-arc');
@@ -493,6 +522,26 @@ function updateUI() {
   const statusEl = document.getElementById('ring-status');
   statusEl.textContent = isRunning && !isPaused ? '● Wearing' : isPaused ? '⏸ Paused' : currentDay > 0 ? 'Ready' : 'Ready';
   statusEl.style.color = isRunning && !isPaused ? '#3ECFB2' : isPaused ? '#F5A623' : 'var(--dim)';
+
+  // Session start/end times display
+  const timesEl = document.getElementById('session-times');
+  const endItem = document.getElementById('end-time-item');
+  if (isRunning || (currentDay > 0 && state.daySessionStartMs)) {
+    timesEl.style.display = 'flex';
+    document.getElementById('display-start-time').textContent =
+      state.daySessionStartMs ? fmtTime(state.daySessionStartMs) : '—';
+    if (state.lastEndMs && !isRunning) {
+      endItem.style.display = '';
+      document.getElementById('display-end-time').textContent = fmtTime(state.lastEndMs);
+    } else if (isPaused && state.lastEndMs) {
+      endItem.style.display = '';
+      document.getElementById('display-end-time').textContent = fmtTime(state.lastEndMs) + ' (paused)';
+    } else {
+      endItem.style.display = 'none';
+    }
+  } else {
+    timesEl.style.display = 'none';
+  }
 
   // Next day hint
   const hint = document.getElementById('next-day-hint');
@@ -620,24 +669,17 @@ if ('serviceWorker' in navigator) {
 }
 
 // ─── Visibility / background resume ──────────────────────────────────────────
+// elapsed is always computed from sessionStartMs so there's nothing to resync.
+// We just need to restart the tick (Android may have killed it) and refresh the UI.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    // Resync elapsed from wall clock in case the tab was frozen
-    if (state.isRunning && !state.isPaused && state.sessionStartMs) {
-      const gone = Math.floor((Date.now() - state.sessionStartMs) / 1000);
-      state.elapsed = gone;
-    }
-    // Restart tick if it was killed by the OS
     if (state.isRunning && !state.isPaused) {
-      stopTick();
-      startTick();
+      stopTick();   // clear any zombie interval
+      startTick();  // restart clean — display catches up immediately via getElapsed()
     }
     updateUI();
   } else {
-    // App going to background — snapshot sessionStartMs so recovery is accurate
-    if (state.isRunning && !state.isPaused) {
-      save();
-    }
+    if (state.isRunning && !state.isPaused) save();
   }
 });
 
